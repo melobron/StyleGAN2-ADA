@@ -1,12 +1,10 @@
 import os
-import matplotlib.pyplot as plt
-import cv2
-import numpy as np
-import math
+import random
 
 import torch
-import torch.nn.init as init
 from torchvision.transforms import transforms
+
+# from metrics.metric import compute_fid,
 
 
 ################################# Path & Directory #################################
@@ -47,20 +45,36 @@ def make_exp_dir(main_dir):
 ################################# Transforms #################################
 def get_transforms(args):
     transform_list = [transforms.ToTensor()]
+    if args.resize:
+        transform_list.append(transforms.Resize((args.img_size, args.img_size)))
     if args.normalize:
         transform_list.append(transforms.Normalize(mean=args.mean, std=args.std))
     return transform_list
 
 
-def crop(img, patch_size):
-    if img.ndim == 2:
-        h, w = img.shape
-        return img[h//2-patch_size//2:h//2+patch_size//2, w//2-patch_size//2:w//2+patch_size//2]
-    elif img.ndim == 3:
-        c, h, w = img.shape
-        return img[:, h//2-patch_size//2:h//2+patch_size//2, w//2-patch_size//2:w//2+patch_size//2]
+################################# Finetune Functions #################################
+# Override requires_grad function
+def requires_grad(model, flag=True, target_layer=None):
+    for name, param in model.named_parameters():
+        if target_layer is None:  # every layer
+            param.requires_grad = flag
+        elif target_layer in name:  # target layer
+            param.requires_grad = flag
+
+
+# Sampling Noise
+def sample_noise(batch_size):
+    if random.random() < 0.9:
+        gen_in11, gen_in12, gen_in21, gen_in22 = torch.randn(4, batch_size, 512, device='cuda').chunk(4, 0)
+        gen_in1 = [gen_in11.squeeze(0), gen_in12.squeeze(0)]
+        gen_in2 = [gen_in21.squeeze(0), gen_in22.squeeze(0)]
+
     else:
-        raise NotImplementedError('Wrong image dim')
+        gen_in1, gen_in2 = torch.randn(2, batch_size, 512, device='cuda').chunk(2, 0)
+        gen_in1 = gen_in1.squeeze(0)
+        gen_in2 = gen_in2.squeeze(0)
+
+    return gen_in1, gen_in2
 
 
 ################################# ETC #################################
@@ -78,58 +92,3 @@ def tensor_to_numpy(x):
         return x
     else:
         raise
-
-
-def plot_tensors(tensor_list, title_list):
-    numpy_list = [tensor_to_numpy(t) for t in tensor_list]
-    fig = plt.figure(figsize=(4*len(numpy_list), 8))
-    rows, cols = 1, len(numpy_list)
-    for i in range(len(numpy_list)):
-        plt.subplot(rows, cols, i+1)
-        plt.imshow(numpy_list[i], cmap='gray')
-        plt.title(title_list[i])
-        plt.axis('off')
-    plt.tight_layout()
-    plt.show()
-
-
-class LambdaLR:
-    def __init__(self, n_epochs, offset, decay_start_epoch):
-        assert ((n_epochs - decay_start_epoch) > 0), "Decay must start before the training session ends!"
-        self.n_epochs = n_epochs
-        self.offset = offset
-        self.decay_start_epoch = decay_start_epoch
-
-    def step(self, epoch):
-        return 1.0 - max(0, epoch + self.offset - self.decay_start_epoch)/(self.n_epochs - self.decay_start_epoch)
-
-
-def weights_init_(init_type='gaussian'):
-   def init_fun(m):
-       classname = m.__class__.__name__
-       if (classname.find('Conv') == 0 or classname.find('Linear') == 0) and hasattr(m, 'weight'):
-           # print m.__class__.__name__
-           if init_type == 'gaussian':
-               init.normal_(m.weight.data, 0.0, 0.02)
-           elif init_type == 'xavier':
-               init.xavier_normal_(m.weight.data, gain=math.sqrt(2))
-           elif init_type == 'kaiming':
-               init.kaiming_normal_(m.weight.data, a=0, mode='fan_in')
-           elif init_type == 'orthogonal':
-               init.orthogonal_(m.weight.data, gain=math.sqrt(2))
-           elif init_type == 'default':
-               pass
-           else:
-               assert 0, "Unsupported initialization: {}".format(init_type)
-           if hasattr(m, 'bias') and m.bias is not None:
-               init.constant_(m.bias.data, 0.0)
-   return init_fun
-
-
-def weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find("Conv") != -1:
-        torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
-    elif classname.find("BatchNorm2d") != -1:
-        torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
-        torch.nn.init.constant_(m.bias.data, 0.0)
